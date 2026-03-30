@@ -331,7 +331,7 @@ body, .gradio-container, #root {
 }
 
 #angel-chat .bot::before {
-    content: '> ANGEL.exe:';
+    content: '> Angel.dev:';
     display: block;
     font-size: 0.65rem;
     color: var(--matrix-green);
@@ -535,8 +535,7 @@ _HEADER_HTML = """
       </div>
 
       <div class="header-meta">
-        <div>Java · Cloud · IA</div>
-        <div>9+ YRS EXP</div>
+        <div>Java · Python · Cloud · IA</div>
         <div style="color:var(--matrix-green-3); margin-top:4px">AWS CERTIFIED</div>
       </div>
 
@@ -602,7 +601,7 @@ _TERMINAL_BAR_HTML = """
     <div class="terminal-bar-dot dot-amber"></div>
     <div class="terminal-bar-dot dot-green"></div>
   </div>
-  <div class="terminal-bar-title">angel_cv.exe — INTERACTIVE TERMINAL v2.0</div>
+  <div class="terminal-bar-title">angel_cv.dev — INTERACTIVE TERMINAL v2.0</div>
 </div>
 """
 
