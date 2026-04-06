@@ -695,4 +695,4 @@ def chat(message: str, history: list) -> str:
 if __name__ == "__main__":
     from ui import build_ui
     app = build_ui(chat)
-    app.launch(server_name="0.0.0.0", server_port=7866)
+    app.launch(server_name="0.0.0.0", server_port=7860)
