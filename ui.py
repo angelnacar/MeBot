@@ -36,64 +36,157 @@ CUSTOM_CSS = """
     --text-primary:     #e8f5e9;
     --text-secondary:   #4caf50;
     --accent-glow:      0 0 15px rgba(0,255,65,0.2);
-    --avatar-size:      120px; /* Tamaño del avatar en desktop */
+    --avatar-size:      120px;
 }
 
-/* ── Tablas Responsivas (Fix para Móvil) ────────────────────────── */
-#chatbot-container .prose table {
+/* ─────────────────────────────────────────────────────────────────
+   FIX CRÍTICO MOBILE #1 — Scroll global en iframe de HF Spaces
+   El iframe de Hugging Face bloquea el scroll táctil si html/body
+   tienen overflow implícito. Forzamos el modelo correcto.
+───────────────────────────────────────────────────────────────── */
+html {
+    height: 100%;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+}
+body {
+    min-height: 100%;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   FIX CRÍTICO MOBILE #2 — Scroll táctil en el chatbot
+   Gradio envuelve el historial en varios divs anidados.
+   Cubrimos todos los selectores conocidos de Gradio 3.x / 4.x.
+───────────────────────────────────────────────────────────────── */
+#chatbot-container,
+#chatbot-container > div,
+#chatbot-container .wrap,
+#chatbot-container .scroll-hide,
+#chatbot-container [data-testid="bot"],
+#chatbot-container .chatbot {
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
+    -webkit-overflow-scrolling: touch !important;  /* iOS momentum scroll */
+    touch-action: pan-y !important;                /* Permite scroll vertical táctil */
+    overscroll-behavior: contain !important;       /* Evita que el scroll se propague al iframe padre */
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   FIX CRÍTICO MOBILE #3 — Tablas en modo "espagueti"
+
+   El problema: en móvil real, el contenedor del mensaje NO tiene
+   overflow:auto, por lo que la tabla empuja el layout y se rompe.
+
+   Solución en dos capas:
+     a) El mensaje burbuja del bot se convierte en contenedor
+        scrollable horizontal.
+     b) La tabla se fuerza a bloque con overflow-x:auto propio.
+
+   Usamos selectores amplios porque Gradio puede generar:
+   .prose > table, .message > table, .bot > table, etc.
+───────────────────────────────────────────────────────────────── */
+
+/* Capa a: burbuja del bot como contenedor scrollable */
+#chatbot-container .message.bot,
+#chatbot-container .bot-row .message,
+#chatbot-container [data-testid="bot"] .message,
+#chatbot-container .bubble-wrap,
+#chatbot-container .prose {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    max-width: 100% !important;
+    /* Evita que el texto del bot empuje el layout */
+    word-break: break-word !important;
+    overflow-wrap: break-word !important;
+}
+
+/* Capa b: la tabla en sí, scrollable y con ancho mínimo por columna */
+#chatbot-container table,
+#chatbot-container .prose table,
+#chatbot-container .message table,
+#chatbot-container .bot table {
     display: block !important;
-    width: 100% !important;
-    overflow-x: auto !important; /* Habilita scroll horizontal */
+    width: max-content !important;   /* Se expande al ancho real de su contenido */
+    max-width: 100% !important;
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    touch-action: pan-x pan-y !important;
     border-collapse: collapse !important;
-    margin: 15px 0 !important;
+    margin: 12px 0 !important;
+    /* Scrollbar Matrix-style */
     scrollbar-width: thin;
     scrollbar-color: var(--matrix-green) transparent;
 }
-
-/* Evitar que las columnas se estrujen */
-#chatbot-container table th, 
-#chatbot-container table td {
-    min-width: 140px !important; /* Ancho mínimo para que el texto respire */
-    padding: 10px !important;
-    word-break: normal !important; /* Evita que rompa palabras letra por letra */
-    white-space: normal !important; /* Permite saltos de línea naturales */
-    border: 1px solid var(--matrix-border) !important;
-    vertical-align: top !important;
-    font-size: 0.85rem !important;
+#chatbot-container table::-webkit-scrollbar { height: 4px; }
+#chatbot-container table::-webkit-scrollbar-thumb {
+    background: var(--matrix-green-dim);
+    border-radius: 10px;
 }
 
-/* Estilo para los encabezados de tabla */
+/* Celdas: ancho mínimo para que el contenido respire */
+#chatbot-container table th,
+#chatbot-container table td {
+    min-width: 120px !important;
+    padding: 8px 12px !important;
+    white-space: normal !important;
+    word-break: normal !important;
+    border: 1px solid var(--matrix-border) !important;
+    vertical-align: top !important;
+    font-size: 0.82rem !important;
+    line-height: 1.4 !important;
+}
+
 #chatbot-container table th {
     background: rgba(0, 255, 65, 0.1) !important;
     color: var(--matrix-green) !important;
     text-transform: uppercase;
     letter-spacing: 1px;
+    white-space: nowrap !important;  /* Cabeceras en una línea para anclar el layout */
 }
 
-/* Personalizar el scrollbar de la tabla para que sea estilo Matrix */
-#chatbot-container .prose table::-webkit-scrollbar {
-    height: 4px;
-}
-#chatbot-container .prose table::-webkit-scrollbar-thumb {
-    background: var(--matrix-green-dim);
-    border-radius: 10px;
+/* ─────────────────────────────────────────────────────────────────
+   FIX MOBILE #4 — Input area y teclado virtual (iOS / Android)
+   En móvil, el teclado virtual reduce el viewport y el input
+   queda oculto. position:sticky lo mantiene visible.
+───────────────────────────────────────────────────────────────── */
+#input-area {
+    background: var(--matrix-panel);
+    padding: 20px;
+    border: 1px solid var(--matrix-border);
+    border-radius: 12px;
+    /* Sticky para que el teclado no lo entierre */
+    position: sticky !important;
+    bottom: 0 !important;
+    z-index: 10 !important;
 }
 
-/* Contenedor Principal: Full Width Responsivo */
+/* Evitar zoom automático en iOS al hacer focus (font-size < 16px dispara zoom) */
+#msg-input textarea {
+    background: #000 !important;
+    border: 1px solid var(--matrix-border) !important;
+    color: var(--text-primary) !important;
+    font-size: 16px !important;   /* ≥16px = sin zoom en iOS Safari */
+    -webkit-text-size-adjust: 100% !important;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   ESTILOS BASE (sin cambios respecto a la versión original)
+───────────────────────────────────────────────────────────────── */
 .gradio-container {
     background: var(--matrix-dark) !important;
-    max-width: 1400px !important; 
+    max-width: 1400px !important;
     width: 95% !important;
     margin: 0 auto !important;
     padding: 10px 0 !important;
     font-family: 'JetBrains Mono', monospace !important;
 }
 
-/* Eliminar espacios en blanco superiores de Gradio */
 .contain { padding: 0 !important; }
 .gap { gap: 15px !important; }
 
-/* Header Estilo Matrix */
 #cv-header {
     width: 100% !important;
     text-align: center;
@@ -106,14 +199,13 @@ CUSTOM_CSS = """
     box-sizing: border-box;
 }
 
-/* Estilos para el Avatar Imagen */
 #header-avatar {
     width: var(--avatar-size);
     height: var(--avatar-size);
-    border-radius: 50%; /* Lo hace redondo */
-    object-fit: cover; /* Asegura que la imagen no se deforme */
-    border: 3px solid var(--matrix-green); /* Borde verde */
-    box-shadow: 0 0 25px rgba(0,255,65,0.5); /* Resplandor del avatar */
+    border-radius: 50%;
+    object-fit: cover;
+    border: 3px solid var(--matrix-green);
+    box-shadow: 0 0 25px rgba(0,255,65,0.5);
     margin-bottom: 20px;
 }
 
@@ -135,7 +227,6 @@ CUSTOM_CSS = """
     text-transform: uppercase;
 }
 
-/* Skill Badges */
 .badge-container {
     display: flex;
     flex-wrap: wrap;
@@ -151,7 +242,6 @@ CUSTOM_CSS = """
     background: rgba(0,255,65,0.05);
 }
 
-/* Chatbot: Ajustes burbujas */
 #chatbot-container {
     background: var(--matrix-panel) !important;
     border: 1px solid var(--matrix-border) !important;
@@ -159,9 +249,10 @@ CUSTOM_CSS = """
 }
 #chatbot-container .message {
     font-size: 0.95rem !important;
+    max-width: 100% !important;        /* Burbujas no se salen del contenedor */
+    box-sizing: border-box !important;
 }
 
-/* Sugerencias: Scroll horizontal tipo Chips */
 #suggestions-row {
     display: flex !important;
     flex-wrap: nowrap !important;
@@ -187,21 +278,6 @@ CUSTOM_CSS = """
     box-shadow: var(--accent-glow);
 }
 
-/* Área de Input */
-#input-area {
-    background: var(--matrix-panel);
-    padding: 20px;
-    border: 1px solid var(--matrix-border);
-    border-radius: 12px;
-}
-#msg-input textarea {
-    background: #000 !important;
-    border: 1px solid var(--matrix-border) !important;
-    color: var(--text-primary) !important;
-    font-size: 1rem !important;
-}
-
-/* Botones Acción: Sin superposición */
 #send-btn {
     background: var(--matrix-green) !important;
     color: black !important;
@@ -215,11 +291,40 @@ CUSTOM_CSS = """
     border-radius: 8px !important;
 }
 
-/* Móvil: Ajustes finales */
+/* ─────────────────────────────────────────────────────────────────
+   RESPONSIVE BREAKPOINTS
+───────────────────────────────────────────────────────────────── */
 @media (max-width: 600px) {
-    :root { --avatar-size: 90px; } /* Avatar más pequeño en móvil */
-    .gradio-container { width: 98% !important; }
-    #cv-header { padding: 25px 10px; }
+    :root { --avatar-size: 80px; }
+    .gradio-container { width: 100% !important; padding: 0 !important; }
+    #cv-header { padding: 20px 10px; border-radius: 0; }
+    #input-area { border-radius: 0; padding: 12px; }
+
+    /* En móvil las burbujas ocupan casi todo el ancho */
+    #chatbot-container .message {
+        max-width: 92% !important;
+    }
+
+    /* Reducir altura del chatbot en pantallas pequeñas
+       para que el input quede siempre visible sin scroll de página */
+    #chatbot-container {
+        height: 55dvh !important;   /* dvh: dynamic viewport height, descuenta el teclado */
+        min-height: 280px !important;
+        border-radius: 0 !important;
+    }
+
+    /* Celdas aún más compactas en móvil */
+    #chatbot-container table th,
+    #chatbot-container table td {
+        min-width: 90px !important;
+        font-size: 0.75rem !important;
+        padding: 6px 8px !important;
+    }
+}
+
+@media (max-width: 380px) {
+    :root { --avatar-size: 68px; }
+    #header-name { letter-spacing: 2px; }
 }
 """
 
@@ -250,11 +355,80 @@ FOOTER_HTML = """
 # ── Construcción de la UI ──────────────────────────────────────────────────
 
 def build_ui(chat_fn):
+    # ── JS: Viewport meta + table-wrapper inyectados en runtime ────────────
+    # Gradio en HF Spaces no expone el <head> directamente.
+    # gr.HTML con <script> se ejecuta dentro del body pero es suficiente
+    # para añadir el viewport meta (si no existe) y envolver tablas.
+    MOBILE_FIX_JS = """
+<script>
+(function() {
+  /* 1. Viewport meta — crítico para escala correcta en móvil real */
+  if (!document.querySelector('meta[name="viewport"]')) {
+    var m = document.createElement('meta');
+    m.name    = 'viewport';
+    m.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+    document.head.appendChild(m);
+  }
+
+  /* 2. Envolver tablas en un div scrollable.
+     CSS puede hacer overflow:auto en la tabla, pero en algunos builds
+     de Gradio el elemento padre tiene overflow:hidden implícito.
+     Envolvemos cada tabla con un div dedicado que hace scroll. */
+  function wrapTables() {
+    var chatbot = document.getElementById('chatbot-container');
+    if (!chatbot) return;
+    chatbot.querySelectorAll('table').forEach(function(table) {
+      if (table.parentElement.classList.contains('tbl-scroll-wrap')) return;
+      var wrap = document.createElement('div');
+      wrap.className = 'tbl-scroll-wrap';
+      wrap.style.cssText = [
+        'overflow-x:auto',
+        '-webkit-overflow-scrolling:touch',
+        'touch-action:pan-x pan-y',
+        'max-width:100%',
+        'margin:12px 0',
+        'border-radius:4px'
+      ].join(';');
+      table.parentNode.insertBefore(wrap, table);
+      wrap.appendChild(table);
+      table.style.margin = '0';
+    });
+  }
+
+  /* 3. Observer: detecta nuevas burbujas del bot y envuelve sus tablas */
+  var observer = new MutationObserver(function(mutations) {
+    mutations.forEach(function(m) {
+      if (m.addedNodes.length) wrapTables();
+    });
+  });
+
+  /* Esperamos a que Gradio monte el DOM */
+  document.addEventListener('DOMContentLoaded', function() {
+    var target = document.getElementById('chatbot-container') || document.body;
+    observer.observe(target, { childList: true, subtree: true });
+    wrapTables();
+  });
+
+  /* Fallback por si DOMContentLoaded ya paso */
+  if (document.readyState !== 'loading') {
+    setTimeout(function() {
+      var target = document.getElementById('chatbot-container') || document.body;
+      observer.observe(target, { childList: true, subtree: true });
+      wrapTables();
+    }, 500);
+  }
+})();
+</script>
+"""
+
     with gr.Blocks(
         css=CUSTOM_CSS,
         title="Ángel Nácar — CV Interactivo",
         theme=gr.themes.Base()
     ) as app:
+
+        # 0. JS de correcciones mobile (se inyecta primero, antes del DOM visible)
+        gr.HTML(MOBILE_FIX_JS)
 
         # 1. Encabezado (con Avatar)
         gr.HTML(HEADER_HTML)

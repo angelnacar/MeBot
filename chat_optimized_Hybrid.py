@@ -43,6 +43,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 from pathlib import Path
+import re
 
 import requests
 from dotenv import load_dotenv
@@ -297,6 +298,36 @@ def record_unknown_question(question: str) -> dict:
     _push(f"Pregunta sin respuesta → {question}")
     return {"recorded": "ok"}
 
+
+def _sanitize_output(text: str) -> str:
+    """
+    Filtro de seguridad final para evitar fugas de información técnica.
+    Elimina UUIDs, nombres de herramientas y menciones a proveedores.
+    """
+    if not text:
+        return text
+    
+    # 1. Eliminar UUIDs (formato estándar 8-4-4-4-12)
+    uuid_pattern = r'[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}'
+    text = re.sub(uuid_pattern, "[ID OMITIDO]", text)
+    
+    # 2. Eliminar nombres de herramientas técnicas
+    tools_to_mask = ["record_user_details", "record_unknown_question"]
+    for tool in tools_to_mask:
+        text = text.replace(tool, "[HERRAMIENTA INTERNA]")
+        
+    # 3. Eliminar menciones a la infraestructura
+    infra_keywords = ["Groq", "Ollama", "gpt-oss", "nemotron", "fallback", "tool_calls"]
+    for kw in infra_keywords:
+        # Case insensitive replacement
+        pattern = re.compile(re.escape(kw), re.IGNORECASE)
+        text = pattern.sub("[SISTEMA]", text)
+        
+    return text
+
+# =============================================================================
+# TOOL REGISTRY
+# =============================================================================
 
 _TOOL_REGISTRY: dict[str, callable] = {
     "record_user_details":     record_user_details,
@@ -686,7 +717,7 @@ def chat(message: str, history: list) -> str:
     # ── PASO 5: Estado de rate limits (debug) ─────────────────────────────────
     logger.debug("Rate limits Groq: %s", _rate_tracker.status())
 
-    return reply
+    return _sanitize_output(reply)
 
 # =============================================================================
 # ENTRY POINT
