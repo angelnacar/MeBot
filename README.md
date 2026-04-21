@@ -1,14 +1,3 @@
----
-title: Mebot
-emoji: 🤖
-colorFrom: blue
-colorTo: gray
-sdk: docker
-pinned: false
-license: mit
-short_description: Chatbot sobre mi perfil profesional
----
-
 # Mebot
 
 Chatbot interactivo del CV de Ángel Nácar Jiménez — una aplicación Gradio desplegada en Hugging Face Spaces que utiliza un pipeline multi-agente LLM para responder preguntas sobre su perfil profesional.
