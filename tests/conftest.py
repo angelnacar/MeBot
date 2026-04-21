@@ -1,0 +1,10 @@
+# =============================================================================
+# conftest.py — Pytest configuration for Mebot tests
+# =============================================================================
+"""Pytest fixtures and configuration."""
+
+import sys
+from pathlib import Path
+
+# Add parent directory to path so imports work correctly
+sys.path.insert(0, str(Path(__file__).parent.parent))

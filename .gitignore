@@ -1,0 +1,51 @@
+# Environment and secrets — NEVER commit these
+.env
+.env.local
+.env.production
+*.env
+
+# Credentials and keys
+credentials.json
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+*.whl
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+mebot.log
+
+# Hugging Face spaces
+.cache/
+
+# uv package manager
+uv.lock
+.python-version

@@ -348,13 +348,23 @@ HEADER_HTML = f"""
 
 FOOTER_HTML = """
 <div style="text-align: center; color: #333; font-size: 0.7rem; margin-top: 15px; font-family: sans-serif;">
-  [ SYS ] CV INTERACTIVO v2.3 • GROQ + OLLAMA HYBRID PIPELINE
+  CV Interactivo — Ángel Nácar
 </div>
 """
 
 # ── Construcción de la UI ──────────────────────────────────────────────────
 
 def build_ui(chat_fn):
+    """Construye la interfaz Gradio completa del chatbot.
+
+    Args:
+        chat_fn: Función de callback que recibe (message, history)
+                 y devuelve la respuesta del agente.
+
+    Returns:
+        Aplicación gr.Blocks configurada con tema Matrix,
+        avatar, chatbot, y área de entrada.
+    """
     # ── JS: Viewport meta + table-wrapper inyectados en runtime ────────────
     # Gradio en HF Spaces no expone el <head> directamente.
     # gr.HTML con <script> se ejecuta dentro del body pero es suficiente
@@ -489,18 +499,29 @@ def build_ui(chat_fn):
         #     return "", history
 
         def user_message(message, history):
-            # Agrega el mensaje del usuario a la historia inmediatamente
-            # y devuelve un string vacío para limpiar el input
+            """Agrega el mensaje del usuario al historial.
+
+            Args:
+                message: Texto del mensaje del usuario.
+                history: Historial actual de la conversación.
+
+            Returns:
+                Tupla con (mensaje vacío para limpiar input, historial actualizado).
+            """
             return "", history + [{"role": "user", "content": message}]
 
         def bot_message(history, chat_fn):
-            # Toma el último mensaje del usuario (ya presente en history)
+            """Procesa el mensaje y genera respuesta del bot.
+
+            Args:
+                history: Historial con mensaje del usuario ya agregado.
+                chat_fn: Función de callback del agente.
+
+            Returns:
+                Historial completo con la respuesta del bot agregada.
+            """
             user_query = history[-1]["content"]
-            
-            # Llama a tu función de IA
             bot_response = chat_fn(user_query, history[:-1])
-            
-            # Agrega la respuesta del bot a la historia
             history.append({"role": "assistant", "content": bot_response})
             return history
 
