@@ -11,13 +11,13 @@ Mebot is an interactive CV chatbot for Ángel Nácar Jiménez — a Gradio app d
 ### Pipeline Flow
 
 ```
-Usuario ──▶ TopicGuardrail ──▶ Toxicidad ──▶ Agente ──▶ Calidad ──▶ Sanitización ──▶ Respuesta
-                    │            (Groq)       (Groq)    (Groq)         │
-                    │               │                       │         │
-                    ▼               ▼                       ▼         │
-            Reconducción     Bloqueo si           Rerun con         │
-            off-topic        score > 0.7         feedback          ▼
-                                                (Ollama)       Output final
+Usuario ──▶ InputGuard ──▶ Agente ──▶ Calidad ──▶ Sanitización ──▶ Respuesta
+              (Ollama)     (Ollama)   (Ollama)         │
+                 │                       │             │
+                 ▼                       ▼             ▼
+        Bloqueo off-topic         Rerun con       Output final
+        o toxicidad              feedback
+        (en una llamada)         (Ollama)
 ```
 
 ### Package Structure
@@ -26,12 +26,11 @@ Usuario ──▶ TopicGuardrail ──▶ Toxicidad ──▶ Agente ──▶ 
 mebot/
 ├── __init__.py       # Public API: chat()
 ├── config.py         # Constants, thresholds, Role enum, ModelConfig
-├── types.py          # TypedDicts: ToxicityResult, QualityResult, etc.
+├── types.py          # TypedDicts: InputGuardResult, QualityResult, etc.
 ├── prompt_loader.py  # PromptLoader + prompt paths
-├── llm_gateway.py    # LLM clients + gateway + RateLimitTracker
+├── llm_gateway.py    # LLM clients + gateway (Ollama)
 ├── tools.py          # ToolRegistry + handlers + TOOLS_SCHEMA
 ├── sanitizer.py      # OutputSanitizer
-├── pushover.py       # Pushover notifications
 ├── pipelines.py      # All pipeline classes + orchestrator + chat()
 └── main.py           # Entry point (internal)
 
@@ -45,29 +44,26 @@ tests/test_mebot.py   # Unit and integration tests
 | Class | Responsibility |
 |-------|----------------|
 | `PipelineOrchestrator` | Coordinates entire message pipeline |
+| `InputGuardPipeline` | Evaluates topic + toxicity in a single LLM call (fail-open/fail-closed) |
 | `AgentPipeline` | Main agent with tool calling loop |
-| `ToxicityPipeline` | Evaluates input toxicity (fail-open) |
 | `QualityEvaluator` | Evaluates response quality (fail-safe) |
-| `TopicGuardrail` | Blocks off-topic questions |
 | `RerunPipeline` | Regenerates response with evaluator feedback |
-| `LLMGateway` | Automatic provider selection with fallback |
-| `RateLimitTracker` | Thread-safe rate limiting with 80% safety factor |
+| `LLMGateway` | Single-provider gateway (Ollama) |
 | `ToolRegistry` | Tool registration and execution |
 | `OutputSanitizer` | Filters UUIDs, tool names, providers, API keys |
 | `OpenAIClient` | Generic LLM client using OpenAI SDK |
 
-### LLM Providers
+### LLM Provider
 
-| Provider | Model | Use | Rate Limit |
-|----------|-------|-----|------------|
-| Groq | `llama-3.1-8b-instant` | Toxicity, Quality, Agent | 80% safety factor |
-| Ollama | `gpt-oss:120b-cloud` | Fallback and Rerun | — |
+| Provider | Model | Use |
+|----------|-------|-----|
+| Ollama | `gpt-oss:120b-cloud` | All roles: InputGuard, Agent, Quality, Rerun |
 
 ### Agent Tools
 
 | Tool | Description |
 |------|-------------|
-| `record_user_details` | Logs contact info via Pushover when user provides email |
+| `record_user_details` | Logs contact info when user provides email |
 | `record_unknown_question` | Logs unrecognized questions for review |
 
 ### Security Thresholds
@@ -89,7 +85,7 @@ The agent must never reveal: tool names, LLM providers, internal architecture, A
 uv run python main.py
 ```
 
-Requires environment variables: `GROQ_API_KEY`, `OLLAMA_BASE_URL`, `OLLAMA_API_KEY`, `PUSHOVER_USER`, `PUSHOVER_TOKEN`.
+Requires environment variables: `OLLAMA_BASE_URL`, `OLLAMA_API_KEY`.
 
 ### Testing
 

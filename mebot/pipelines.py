@@ -1,29 +1,29 @@
 # =============================================================================
 # pipelines.py — Multi-agent pipelines for Mebot
 # =============================================================================
-"""Pipeline classes for toxicity, quality, agent, rerun, and orchestration."""
+"""Pipeline classes for input guard, quality, agent, rerun, and orchestration."""
 
 from __future__ import annotations
 
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import Any
 
 from .config import (
     _AGENT_MAX_TOKENS,
+    _INPUT_GUARD_MAX_TOKENS,
     _QUALITY_MAX_TOKENS,
-    _TOXICITY_MAX_TOKENS,
     QUALITY_THRESHOLD,
     TOXICITY_BLOCK_MSG,
     TOXICITY_THRESHOLD,
     Role,
 )
 from .llm_gateway import LLMResponse, _llm_gateway
-from .prompt_loader import quality_prompt, system_prompt, topic_guardrail_prompt, toxicity_prompt
+from .prompt_loader import input_guard_prompt, quality_prompt, system_prompt
 from .sanitizer import OutputSanitizer
 from .tools import TOOLS_SCHEMA, _get_tool_schema, _tool_registry
-from .types import QualityResult, ToolCallResult, ToxicityResult
+from .types import InputGuardResult, QualityResult, ToolCallResult
 
 try:
     from jsonschema import ValidationError, validate
@@ -78,56 +78,129 @@ def _parse_json(raw: str | None, label: str) -> dict[str, Any] | None:
 
 
 # =============================================================================
-# ToxicityPipeline
+# InputGuardPipeline
 # =============================================================================
 
 
-class ToxicityPipeline:
-    """Evalúa la toxicidad de un mensaje de usuario.
+class InputGuardPipeline:
+    """Evalúa tópico y toxicidad del mensaje en una sola llamada LLM.
 
-    Fallback: si falla, retorna ACCEPTABLE con score 0.0 (fail-open).
+    Combina TopicGuardrail y ToxicityPipeline en un único round-trip para
+    reducir la latencia antes de que el agente principal genere su respuesta.
+
+    Comportamiento ante fallos:
+    - JSON vacío o inválido → fail-open (mensaje permitido).
+    - Error de red/servicio → fail-closed (mensaje bloqueado por seguridad).
     """
 
-    def evaluate(self, message: str, history: Messages) -> ToxicityResult:
-        """Evalúa el mensaje y devuelve el resultado.
+    OFF_TOPIC_MSG = (
+        "Solo puedo responder preguntas sobre el perfil profesional de Ángel Nácar, "
+        "su experiencia, habilidades, proyectos o cómo contactar con él. "
+        "¿Tienes alguna duda sobre alguno de estos temas?"
+    )
 
-        Fail-open: si falla, no bloqueamos al usuario.
+    def evaluate(self, message: str, history: Messages) -> tuple[bool, str, InputGuardResult]:
+        """Evalúa el mensaje y devuelve resultado combinado.
+
+        Returns:
+            (is_allowed, block_message, guard_result)
+            Si is_allowed=True, block_message está vacío.
         """
         try:
             content = _llm_gateway.complete(
-                Role.TOXICITY,
+                Role.INPUT_GUARD,
                 [
                     {
                         "role": "system",
-                        "content": "Eres un evaluador de seguridad. Responde SOLO con JSON válido, sin texto adicional.",
+                        "content": (
+                            "Eres un clasificador de seguridad. "
+                            "Responde SOLO con JSON válido, sin texto adicional."
+                        ),
                     },
-                    {"role": "user", "content": toxicity_prompt(message, history)},
+                    {"role": "user", "content": input_guard_prompt(message, history)},
                 ],
-                max_tokens=_TOXICITY_MAX_TOKENS,
+                max_tokens=_INPUT_GUARD_MAX_TOKENS,
                 temperature=0.0,
             )
-            parsed = _parse_json(content, "toxicity")
+            parsed = _parse_json(content, "input_guard")
             if parsed is not None:
-                return ToxicityResult(
-                    classification=parsed.get("classification", "ACCEPTABLE"),
+                result = InputGuardResult(
+                    topic=parsed.get("topic", "ACCEPTABLE"),
+                    topic_confidence=float(parsed.get("topic_confidence", 0.0)),
+                    toxicity=parsed.get("toxicity", "ACCEPTABLE"),
                     toxicity_score=float(parsed.get("toxicity_score", 0.0)),
                     reason=parsed.get("reason", ""),
+                    suggested_redirect=parsed.get("suggested_redirect", ""),
                 )
-            # Contenido vacío del evaluador → no tóxico (fail-open)
-            logger.warning("ToxicityPipeline: contenido vacío, tratando como seguro")
-            return ToxicityResult(
-                classification="ACCEPTABLE",
-                toxicity_score=0.0,
-                reason="evaluador sin respuesta",
-            )
-        except Exception as exc:
-            logger.error("ToxicityPipeline falló: %s", exc)
-            # Solo fail-closed ante error real de red/servicio
-            return ToxicityResult(
-                classification="NOT_ACCEPTABLE",
+
+                # Verificar tópico primero
+                if result["topic"] == "OFF_TOPIC" and result["topic_confidence"] >= 0.5:
+                    logger.warning(
+                        "InputGuard → OFF_TOPIC (confidence=%.2f) | %s",
+                        result["topic_confidence"],
+                        result["reason"],
+                    )
+                    redirect = result["suggested_redirect"] or self.OFF_TOPIC_MSG
+                    return False, redirect, result
+
+                # Verificar toxicidad
+                if result["toxicity_score"] > TOXICITY_THRESHOLD:
+                    logger.warning(
+                        "InputGuard → TOXIC (score=%.2f) | %s",
+                        result["toxicity_score"],
+                        result["reason"],
+                    )
+                    return False, TOXICITY_BLOCK_MSG, result
+
+                logger.debug(
+                    "InputGuard → OK (topic=%s conf=%.2f, toxicity=%.2f) | %s",
+                    result["topic"],
+                    result["topic_confidence"],
+                    result["toxicity_score"],
+                    result["reason"],
+                )
+                return True, "", result
+
+            # JSON vacío → fail-open
+            logger.warning("InputGuardPipeline: JSON vacío, permitiendo mensaje")
+            return True, "", _default_guard_result()
+
+        except RuntimeError as exc:
+            if "truncated" in str(exc).lower():
+                # Truncado por max_tokens: JSON incompleto, no es error de servicio → fail-open
+                logger.warning("InputGuardPipeline: respuesta truncada, permitiendo mensaje — %s", exc)
+                return True, "", _default_guard_result()
+            logger.error("InputGuardPipeline falló: %s", exc)
+            return False, TOXICITY_BLOCK_MSG, InputGuardResult(
+                topic="ACCEPTABLE",
+                topic_confidence=0.0,
+                toxicity="NOT_ACCEPTABLE",
                 toxicity_score=1.0,
                 reason="evaluador no disponible — bloqueado por seguridad",
+                suggested_redirect="",
             )
+        except Exception as exc:
+            logger.error("InputGuardPipeline falló: %s", exc)
+            # Fail-closed ante error real de red/servicio
+            return False, TOXICITY_BLOCK_MSG, InputGuardResult(
+                topic="ACCEPTABLE",
+                topic_confidence=0.0,
+                toxicity="NOT_ACCEPTABLE",
+                toxicity_score=1.0,
+                reason="evaluador no disponible — bloqueado por seguridad",
+                suggested_redirect="",
+            )
+
+
+def _default_guard_result() -> InputGuardResult:
+    return InputGuardResult(
+        topic="ACCEPTABLE",
+        topic_confidence=0.0,
+        toxicity="ACCEPTABLE",
+        toxicity_score=0.0,
+        reason="sin respuesta del evaluador",
+        suggested_redirect="",
+    )
 
 
 # =============================================================================
@@ -167,7 +240,6 @@ class QualityEvaluator:
                     issues=list(parsed.get("issues") or []),
                     suggestion=str(parsed.get("suggestion") or ""),
                 )
-            # Contenido vacío o JSON truncado → fail-safe
             logger.warning("QualityEvaluator: contenido vacío o JSON inválido, tratando como GOOD")
         except Exception as exc:
             logger.error("QualityEvaluator falló: %s", exc)
@@ -179,90 +251,6 @@ class QualityEvaluator:
             issues=[],
             suggestion="",
         )
-
-
-# =============================================================================
-# TopicGuardrail
-# =============================================================================
-
-
-class TopicGuardrailResult(TypedDict):
-    """Resultado de la evaluación del guardrail de tópicos.
-
-    Attributes:
-        classification: 'ACCEPTABLE' o 'OFF_TOPIC'.
-        confidence: Puntuación de confianza entre 0.0 y 1.0.
-        reason: Explicación de la clasificación.
-        suggested_redirect: Mensaje sugerido para reconducir (si es OFF_TOPIC).
-    """
-
-    classification: str
-    confidence: float
-    reason: str
-    suggested_redirect: str
-
-
-class TopicGuardrail:
-    """Guardrail de tópicos para evitar preguntas off-topic.
-
-    Permite saludos y preguntas genéricas, pero bloquea temas ajenos al perfil.
-    """
-
-    OFF_TOPIC_MSG = (
-        "Solo puedo responder preguntas sobre el perfil profesional de Ángel Nácar, "
-        "su experiencia, habilidades, proyectos o cómo contactar con él. "
-        "¿Tienes alguna duda sobre alguno de estos temas?"
-    )
-
-    def evaluate(self, message: str, history: Messages) -> tuple[bool, str]:
-        """Evalúa si el mensaje está dentro del ámbito permitido.
-
-        Returns:
-            (is_allowed, redirect_message) tuple.
-            Si is_allowed=True, redirect_message está vacío.
-            Si is_allowed=False, redirect_message contiene el mensaje de reconducción.
-        """
-        try:
-            content = _llm_gateway.complete(
-                Role.TOXICITY,
-                [
-                    {
-                        "role": "system",
-                        "content": "Eres un clasificador de tópicos. Responde SOLO con JSON válido.",
-                    },
-                    {"role": "user", "content": topic_guardrail_prompt(message, history)},
-                ],
-                max_tokens=_TOXICITY_MAX_TOKENS,
-                temperature=0.0,
-            )
-            parsed = _parse_json(content, "topic_guardrail")
-            if parsed is not None:
-                classification = parsed.get("classification", "OFF_TOPIC")
-                confidence = float(parsed.get("confidence", 0.0))
-
-                # Fail-open con confianza baja → permitir pero monitorizar
-                if classification == "OFF_TOPIC" and confidence >= 0.5:
-                    logger.warning(
-                        "TopicGuardrail → OFF_TOPIC (confidence=%.2f) | %s",
-                        confidence,
-                        parsed.get("reason", ""),
-                    )
-                    return False, self.OFF_TOPIC_MSG
-
-                logger.debug(
-                    "TopicGuardrail → %s (confidence=%.2f) | %s",
-                    classification,
-                    confidence,
-                    parsed.get("reason", ""),
-                )
-
-            # Contenido vacío o JSON inválido → permitir (fail-open)
-            return True, ""
-
-        except Exception as exc:
-            logger.error("TopicGuardrail falló: %s", exc)
-            # Fail-open: no bloqueamos si el guardrail falla
-            return True, ""
 
 
 # =============================================================================
@@ -343,7 +331,7 @@ class AgentPipeline:
                 messages.extend(tool_results)
                 continue
 
-            # Si content tiene JSON con tool_calls (formato anterior/alternativo)
+            # Si content tiene JSON con tool_calls (formato alternativo)
             parsed = _parse_json(content, f"agent-{iteration}")
             if parsed is None:
                 if content.strip():
@@ -384,13 +372,11 @@ class AgentPipeline:
     def _normalize_tool_call(tc: Any) -> tuple[str, dict[str, Any], str]:
         """Normaliza tool call (Pydantic o dict) a tupla (name, args, tool_id)."""
         if hasattr(tc, "function") and hasattr(tc, "id"):
-            # Pydantic ChatCompletionMessageFunctionToolCall
             name = tc.function.name
             args_str = tc.function.arguments
             args = json.loads(args_str) if isinstance(args_str, str) else args_str
             tool_id = tc.id
         else:
-            # Dict (de JSON parseado)
             name = tc.get("name") or tc.get("function", {}).get("name", "")
             args_raw = tc.get("arguments") or tc.get("function", {}).get("arguments", "{}")
             args = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
@@ -411,7 +397,6 @@ class AgentPipeline:
 
             logger.info("Tool → %s", name)
 
-            # Validar argumentos contra el schema del tool
             tool_schema = _get_tool_schema(name)
             if tool_schema:
                 try:
@@ -427,7 +412,6 @@ class AgentPipeline:
                     )
                     continue
 
-            # Eliminar 'name' de args si existe (ya se pasa como primer argumento)
             args_for_call = {k: v for k, v in args.items() if k != "name"}
             result = _tool_registry.call(name, **args_for_call)
 
@@ -447,10 +431,7 @@ class AgentPipeline:
 
 
 class RerunPipeline:
-    """Regenera la respuesta incorporando feedback del evaluador.
-
-    Usa Ollama exclusivamente para conservar cuota Groq.
-    """
+    """Regenera la respuesta incorporando feedback del evaluador."""
 
     def run(
         self,
@@ -486,42 +467,36 @@ class RerunPipeline:
 class PipelineOrchestrator:
     """Orquestador central del pipeline multi-agente.
 
-    Coordina: TopicGuardrail → Toxicity → Agent → Quality → Rerun opcional.
+    Coordina: InputGuard → Agent → Quality → Rerun opcional.
     """
 
     def __init__(self) -> None:
-        self._topic = TopicGuardrail()
-        self._toxicity = ToxicityPipeline()
+        self._guard = InputGuardPipeline()
         self._agent = AgentPipeline()
         self._quality = QualityEvaluator()
         self._rerun = RerunPipeline()
 
     def chat(self, message: str, history: Messages) -> str:
         """Ejecuta el pipeline completo y devuelve la respuesta sanitizada."""
-        # ── Paso 1: Topic Guardrail ──────────────────────────────────────────────
-        is_allowed, redirect_msg = self._topic.evaluate(message, history)
+        # ── Paso 1: Input Guard (tópico + toxicidad) ────────────────────────────
+        is_allowed, block_msg, guard_result = self._guard.evaluate(message, history)
         if not is_allowed:
-            logger.warning("Mensaje BLOQUEADO por TopicGuardrail: %s", message[:100])
-            return redirect_msg
+            logger.warning("Mensaje BLOQUEADO por InputGuard: %s", message[:100])
+            return block_msg
 
-        # ── Paso 2: Toxicidad ───────────────────────────────────────────────────
-        toxicity_result = self._toxicity.evaluate(message, history)
         logger.info(
-            "Toxicidad → %s | score=%.2f | %s",
-            toxicity_result["classification"],
-            toxicity_result["toxicity_score"],
-            toxicity_result["reason"],
+            "InputGuard → OK | topic=%s (conf=%.2f) | toxicity=%.2f | %s",
+            guard_result["topic"],
+            guard_result["topic_confidence"],
+            guard_result["toxicity_score"],
+            guard_result["reason"],
         )
 
-        if toxicity_result["toxicity_score"] > TOXICITY_THRESHOLD:
-            logger.warning("Mensaje BLOQUEADO (toxicity=%.2f)", toxicity_result["toxicity_score"])
-            return TOXICITY_BLOCK_MSG
-
-        # ── Paso 3: Agente principal ───────────────────────────────────────────
+        # ── Paso 2: Agente principal ───────────────────────────────────────────
         agent_response = self._agent.run(message, history)
         reply = agent_response.content
 
-        # ── Paso 4: Calidad ──────────────────────────────────────────────────────
+        # ── Paso 3: Calidad ──────────────────────────────────────────────────────
         quality_result = self._quality.evaluate(reply, message, history)
         logger.info(
             "Calidad → %s | score=%.2f | issues=%s",
@@ -530,7 +505,7 @@ class PipelineOrchestrator:
             quality_result["issues"],
         )
 
-        # ── Paso 5: Rerun si es necesario ──────────────────────────────────────
+        # ── Paso 4: Rerun si es necesario ──────────────────────────────────────
         if quality_result["quality_score"] < QUALITY_THRESHOLD:
             feedback = (
                 quality_result["suggestion"]
@@ -559,13 +534,12 @@ _orchestrator = PipelineOrchestrator()
 def chat(message: str, history: Messages) -> str:
     """Función principal del chatbot CV Ángel Nácar.
 
-    Pipeline:
-      1. TopicGuardrail → Groq llama-3.1-8b-instant (fallback Ollama) - BLOQUEA off-topic
-      2. Toxicidad      → Groq llama-3.1-8b-instant (fallback Ollama)
-      3. Agente         → Groq llama-3.1-8b-instant (fallback Ollama)
-         └ tool loop    → record_user_details, record_unknown_question
-      4. Calidad        → Groq llama-3.1-8b-instant (fallback Ollama)
-      5. Rerun opcional → Ollama (si quality_score < 0.6)
+    Pipeline (3 llamadas LLM mínimas):
+      1. InputGuard   → Ollama — evaluación combinada de tópico y toxicidad
+      2. Agente       → Ollama — respuesta con tool calling opcional
+         └ tool loop  → record_user_details, record_unknown_question
+      3. Calidad      → Ollama — evaluación de la respuesta
+      4. Rerun        → Ollama — opcional si quality_score < 0.6
 
     Args:
         message: turno actual del usuario.

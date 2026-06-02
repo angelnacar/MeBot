@@ -11,8 +11,6 @@ from typing import Any
 
 from jsonschema import ValidationError, validate
 
-from .pushover import _pushover
-
 logger = logging.getLogger(__name__)
 
 
@@ -68,14 +66,14 @@ def record_user_details(
     name: str = "Nombre no proporcionado",
     notes: str = "not provided",
 ) -> dict[str, str]:
-    """Registra detalles de contacto del usuario via Pushover."""
-    _pushover(f"Contacto registrado → {name} | {email} | {notes}")
+    """Registra detalles de contacto del usuario."""
+    logger.info("Contacto registrado → %s | %s | %s", name, email, notes)
     return {"recorded": "ok"}
 
 
 def record_unknown_question(question: str) -> dict[str, str]:
     """Registra preguntas no respondidas para revisión."""
-    _pushover(f"Pregunta sin respuesta → {question}")
+    logger.info("Pregunta sin respuesta → %s", question)
     return {"recorded": "ok"}
 
 

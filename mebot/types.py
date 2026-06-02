@@ -5,21 +5,27 @@
 
 from __future__ import annotations
 
-from typing import NotRequired, TypedDict
+from typing import TypedDict
 
 
-class ToxicityResult(TypedDict):
-    """Resultado de la evaluación de toxicidad de un mensaje.
+class InputGuardResult(TypedDict):
+    """Resultado combinado de evaluación de tópico y toxicidad.
 
     Attributes:
-        classification: Clasificación del contenido ('toxic' o 'safe').
+        topic: Clasificación de tópico ('ACCEPTABLE' o 'OFF_TOPIC').
+        topic_confidence: Confianza de la clasificación entre 0.0 y 1.0.
+        toxicity: Clasificación de toxicidad ('ACCEPTABLE' o 'NOT_ACCEPTABLE').
         toxicity_score: Puntuación de toxicidad entre 0.0 y 1.0.
         reason: Explicación breve del resultado.
+        suggested_redirect: Mensaje de reconducción si el tópico es OFF_TOPIC.
     """
 
-    classification: str
+    topic: str
+    topic_confidence: float
+    toxicity: str
     toxicity_score: float
     reason: str
+    suggested_redirect: str
 
 
 class QualityResult(TypedDict):
@@ -42,7 +48,7 @@ class ToolCallResult(TypedDict):
     """Resultado de una llamada a herramienta del agente.
 
     Attributes:
-        role: Rol del mensaje ('assistant').
+        role: Rol del mensaje ('tool').
         content: Contenido de la respuesta.
         tool_call_id: Identificador único de la llamada a herramienta.
     """
@@ -50,15 +56,3 @@ class ToolCallResult(TypedDict):
     role: str
     content: str
     tool_call_id: str
-
-
-class RateLimitConfig(TypedDict):
-    """Configuración de rate limiting para un modelo.
-
-    Attributes:
-        rpm: Requests per minute limit.
-        rpd: Requests per day limit.
-    """
-
-    rpm: int
-    rpd: int

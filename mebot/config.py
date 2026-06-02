@@ -8,8 +8,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from .types import RateLimitConfig
-
 
 # =============================================================================
 # Threshold constants
@@ -26,27 +24,9 @@ TOXICITY_BLOCK_MSG = (
 # Token limits per pipeline
 # =============================================================================
 
-_TOXICITY_MAX_TOKENS = 150
+_INPUT_GUARD_MAX_TOKENS = 400
 _QUALITY_MAX_TOKENS = 300
 _AGENT_MAX_TOKENS = 2048
-
-
-# =============================================================================
-# Rate Limiting Configuration
-# =============================================================================
-#
-# Límites gratuitos Groq (tier gratuito):
-#   gpt-oss-20b  → 30 RPM / 8K RPD
-#   gpt-oss-120b → 30 RPM / 8K RPD
-#
-# Factor de seguridad 80%: forzamos fallback antes del 429.
-
-_SAFETY_FACTOR = 0.80
-
-_GROQ_LIMITS: dict[str, RateLimitConfig] = {
-    "openai/gpt-oss-20b": {"rpm": 30, "rpd": 8_000},
-    "openai/gpt-oss-120b": {"rpm": 30, "rpd": 8_000},
-}
 
 
 # =============================================================================
@@ -59,7 +39,7 @@ class ModelConfig:
     """Configuración de un modelo LLM.
 
     Attributes:
-        provider: Nombre del proveedor ('groq', 'ollama').
+        provider: Nombre del proveedor ('ollama').
         name: Nombre del modelo.
     """
 
@@ -70,37 +50,25 @@ class ModelConfig:
 class Role(Enum):
     """Roles disponibles para los modelos LLM en el pipeline.
 
-    Cada rol utiliza modelos específicos y tiene configuraciones
-    de rate limiting independientes.
-
     Attributes:
-        TOXICITY: Evaluación de toxicidad del mensaje de entrada.
+        INPUT_GUARD: Evaluación combinada de tópico y toxicidad.
         EVALUATOR: Evaluación de calidad de la respuesta generada.
         AGENT: Agente principal con capacidad de tool calling.
         RERUN: Regeneración de respuesta con feedback del evaluador.
     """
 
-    TOXICITY = "toxicity"
+    INPUT_GUARD = "input_guard"
     EVALUATOR = "evaluator"
     AGENT = "agent"
     RERUN = "rerun"
 
 
-_MODEL_CONFIG: dict[Role, tuple[ModelConfig, ModelConfig]] = {
-    Role.TOXICITY: (
-        ModelConfig("groq", "llama-3.1-8b-instant"),
-        ModelConfig("ollama", "gpt-oss:120b-cloud"),
-    ),
-    Role.EVALUATOR: (
-        ModelConfig("groq", "llama-3.1-8b-instant"),
-        ModelConfig("ollama", "gpt-oss:120b-cloud"),
-    ),
-    Role.AGENT: (
-        ModelConfig("groq", "llama-3.1-8b-instant"),
-        ModelConfig("ollama", "gpt-oss:120b-cloud"),
-    ),
-    Role.RERUN: (
-        ModelConfig("ollama", "gpt-oss:120b-cloud"),
-        ModelConfig("ollama", "gpt-oss:120b-cloud"),
-    ),
+_AGENT_MODEL = "deepseek-v4-pro:cloud"
+_SUPPORT_MODEL = "minimax-m3:cloud"
+
+_MODEL_CONFIG: dict[Role, ModelConfig] = {
+    Role.INPUT_GUARD: ModelConfig("ollama", _SUPPORT_MODEL),
+    Role.EVALUATOR: ModelConfig("ollama", _SUPPORT_MODEL),
+    Role.AGENT: ModelConfig("ollama", _AGENT_MODEL),
+    Role.RERUN: ModelConfig("ollama", _SUPPORT_MODEL),
 }

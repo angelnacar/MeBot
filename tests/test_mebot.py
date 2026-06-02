@@ -1,12 +1,9 @@
 # =============================================================================
-# tests/test_mebot.py — Tests for Mebot after refactor
+# tests/test_mebot.py — Tests for Mebot
 # =============================================================================
-"""
-Unit and integration tests for Mebot CV chatbot.
-"""
+"""Unit and integration tests for Mebot CV chatbot."""
 
 import json
-import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,10 +13,9 @@ import mebot
 from mebot.pipelines import (
     AgentPipeline,
     AgentResponse,
+    InputGuardPipeline,
     PipelineOrchestrator,
     QualityEvaluator,
-    TopicGuardrail,
-    ToxicityPipeline,
     _orchestrator,
 )
 from mebot.llm_gateway import LLMResponse
@@ -30,9 +26,9 @@ from mebot.tools import (
     _tool_registry,
 )
 from mebot.sanitizer import OutputSanitizer
-from mebot.llm_gateway import RateLimitTracker
 from mebot.prompt_loader import PromptLoader
-from mebot.config import _SAFETY_FACTOR
+from mebot.types import InputGuardResult
+
 
 # =============================================================================
 # FIXTURES
@@ -47,11 +43,6 @@ def sanitizer():
 @pytest.fixture
 def tool_registry():
     return ToolRegistry()
-
-
-@pytest.fixture
-def rate_tracker():
-    return RateLimitTracker()
 
 
 # =============================================================================
@@ -71,12 +62,6 @@ class TestOutputSanitizer:
         result = sanitizer.sanitize(text)
         assert "[HERRAMIENTA INTERNA]" in result
         assert "record_user_details" not in result
-
-    def test_sanitize_removes_groq_provider(self, sanitizer):
-        text = "Using Groq API"
-        result = sanitizer.sanitize(text)
-        assert "Groq" not in result
-        assert "[SISTEMA]" in result
 
     def test_sanitize_removes_ollama_provider(self, sanitizer):
         text = "Using Ollama"
@@ -121,29 +106,6 @@ class TestToolRegistry:
 
 
 # =============================================================================
-# RATE LIMIT TRACKER TESTS
-# =============================================================================
-
-
-class TestRateLimitTracker:
-    def test_can_use_within_limit(self, rate_tracker):
-        for _ in range(23):
-            rate_tracker.record("openai/gpt-oss-20b")
-        assert rate_tracker.can_use("openai/gpt-oss-20b") is True
-
-    def test_can_use_above_limit(self, rate_tracker):
-        for _ in range(25):
-            rate_tracker.record("openai/gpt-oss-20b")
-        assert rate_tracker.can_use("openai/gpt-oss-20b") is False
-
-    def test_can_use_unknown_model(self, rate_tracker):
-        assert rate_tracker.can_use("unknown/model") is True
-
-    def test_safety_factor_is_80_percent(self):
-        assert _SAFETY_FACTOR == 0.80
-
-
-# =============================================================================
 # PROMPT LOADER TESTS
 # =============================================================================
 
@@ -155,8 +117,8 @@ class TestPromptLoader:
         assert isinstance(result, str)
         assert len(result) > 0
 
-    def test_render_user_toxicity_prompt(self):
-        path = Path(__file__).parent.parent / "prompts" / "user_toxicity.md"
+    def test_render_input_guard_prompt(self):
+        path = Path(__file__).parent.parent / "prompts" / "input_guard.md"
         result = PromptLoader.render(path, message="test", history=[])
         assert "test" in result
 
@@ -167,19 +129,12 @@ class TestPromptLoader:
 
 
 class TestToolFunctions:
-    @patch("mebot.tools._pushover")
-    def test_record_user_details_calls_pushover(self, mock_pushover):
-        record_user_details(email="test@example.com", name="Test User")
-        mock_pushover.assert_called_once()
-        assert "test@example.com" in mock_pushover.call_args[0][0]
-
-    @patch("mebot.tools._pushover")
-    def test_record_unknown_question_calls_pushover(self, mock_pushover):
-        record_unknown_question(question="How to contact?")
-        mock_pushover.assert_called_once()
-
     def test_record_user_details_returns_success(self):
-        result = record_user_details(email="test@example.com")
+        result = record_user_details(email="test@example.com", name="Test User")
+        assert result == {"recorded": "ok"}
+
+    def test_record_unknown_question_returns_success(self):
+        result = record_unknown_question(question="How to contact?")
         assert result == {"recorded": "ok"}
 
 
@@ -197,6 +152,87 @@ class TestUIFunctions:
 
 
 # =============================================================================
+# INPUT GUARD TESTS
+# =============================================================================
+
+
+class TestInputGuardPipeline:
+    @patch("mebot.pipelines._llm_gateway")
+    def test_allows_on_topic_message(self, mock_gateway):
+        mock_gateway.complete = MagicMock(return_value=json.dumps({
+            "topic": "ACCEPTABLE",
+            "topic_confidence": 0.9,
+            "toxicity": "ACCEPTABLE",
+            "toxicity_score": 0.1,
+            "reason": "ok",
+            "suggested_redirect": "",
+        }))
+        pipeline = InputGuardPipeline()
+        allowed, msg, result = pipeline.evaluate("¿Cuántos años de experiencia tiene Ángel?", [])
+        assert allowed is True
+        assert msg == ""
+
+    @patch("mebot.pipelines._llm_gateway")
+    def test_blocks_off_topic_with_high_confidence(self, mock_gateway):
+        mock_gateway.complete = MagicMock(return_value=json.dumps({
+            "topic": "OFF_TOPIC",
+            "topic_confidence": 0.8,
+            "toxicity": "ACCEPTABLE",
+            "toxicity_score": 0.1,
+            "reason": "pregunta de matemáticas",
+            "suggested_redirect": "Solo respondo sobre el perfil de Ángel.",
+        }))
+        pipeline = InputGuardPipeline()
+        allowed, msg, result = pipeline.evaluate("¿Cuánto es 2+2?", [])
+        assert allowed is False
+        assert msg != ""
+
+    @patch("mebot.pipelines._llm_gateway")
+    def test_allows_off_topic_with_low_confidence(self, mock_gateway):
+        mock_gateway.complete = MagicMock(return_value=json.dumps({
+            "topic": "OFF_TOPIC",
+            "topic_confidence": 0.3,
+            "toxicity": "ACCEPTABLE",
+            "toxicity_score": 0.1,
+            "reason": "dudoso",
+            "suggested_redirect": "",
+        }))
+        pipeline = InputGuardPipeline()
+        allowed, _, _ = pipeline.evaluate("¿Algo sobre IA?", [])
+        assert allowed is True
+
+    @patch("mebot.pipelines._llm_gateway")
+    def test_blocks_toxic_message(self, mock_gateway):
+        mock_gateway.complete = MagicMock(return_value=json.dumps({
+            "topic": "ACCEPTABLE",
+            "topic_confidence": 0.9,
+            "toxicity": "NOT_ACCEPTABLE",
+            "toxicity_score": 0.9,
+            "reason": "lenguaje ofensivo",
+            "suggested_redirect": "",
+        }))
+        pipeline = InputGuardPipeline()
+        allowed, msg, _ = pipeline.evaluate("mensaje ofensivo", [])
+        assert allowed is False
+        assert "Lo siento" in msg
+
+    @patch("mebot.pipelines._llm_gateway")
+    def test_fail_closed_on_exception(self, mock_gateway):
+        mock_gateway.complete = MagicMock(side_effect=Exception("Network error"))
+        pipeline = InputGuardPipeline()
+        allowed, _, result = pipeline.evaluate("any message", [])
+        assert allowed is False
+        assert result["toxicity_score"] == 1.0
+
+    @patch("mebot.pipelines._llm_gateway")
+    def test_fail_open_on_invalid_json(self, mock_gateway):
+        mock_gateway.complete = MagicMock(return_value="not valid json at all <<<")
+        pipeline = InputGuardPipeline()
+        allowed, _, _ = pipeline.evaluate("any message", [])
+        assert allowed is True
+
+
+# =============================================================================
 # INTEGRATION TESTS
 # =============================================================================
 
@@ -204,13 +240,12 @@ class TestUIFunctions:
 class TestPipelineIntegration:
     @patch("mebot.pipelines._llm_gateway")
     def test_orchestrator_completes_conversation(self, mock_gateway):
-        def complete_side(role, messages, **kwargs):
-            if kwargs.get("raw"):
-                return LLMResponse(content="Soy desarrollador senior.", tool_calls=None, finish_reason="stop")
-            return json.dumps({"classification": "GOOD", "quality_score": 0.8, "issues": [], "suggestion": ""})
-
         mock_gateway.complete = MagicMock(side_effect=[
-            json.dumps({"classification": "ACCEPTABLE", "toxicity_score": 0.1, "reason": "clean"}),
+            json.dumps({
+                "topic": "ACCEPTABLE", "topic_confidence": 0.9,
+                "toxicity": "ACCEPTABLE", "toxicity_score": 0.1,
+                "reason": "clean", "suggested_redirect": "",
+            }),
             LLMResponse(content="Soy desarrollador senior.", tool_calls=None, finish_reason="stop"),
             json.dumps({"classification": "GOOD", "quality_score": 0.8, "issues": [], "suggestion": ""}),
         ])
@@ -222,18 +257,20 @@ class TestPipelineIntegration:
     @patch("mebot.pipelines._llm_gateway")
     def test_orchestrator_blocks_toxic_message(self, mock_gateway):
         mock_gateway.complete = MagicMock(return_value=json.dumps({
-            "classification": "NOT_ACCEPTABLE", "toxicity_score": 0.9, "reason": "offensive",
+            "topic": "ACCEPTABLE", "topic_confidence": 0.9,
+            "toxicity": "NOT_ACCEPTABLE", "toxicity_score": 0.9,
+            "reason": "offensive", "suggested_redirect": "",
         }))
         orchestrator = PipelineOrchestrator()
         result = orchestrator.chat("Bad words", [])
         assert "Lo siento" in result or "no puedo continuar" in result
 
     @patch("mebot.pipelines._llm_gateway")
-    def test_toxicity_pipeline_fail_closed(self, mock_gateway):
+    def test_input_guard_fail_closed(self, mock_gateway):
         mock_gateway.complete = MagicMock(side_effect=Exception("API Error"))
-        pipeline = ToxicityPipeline()
-        result = pipeline.evaluate("any message", [])
-        assert result["classification"] == "NOT_ACCEPTABLE"
+        pipeline = InputGuardPipeline()
+        allowed, _, result = pipeline.evaluate("any message", [])
+        assert allowed is False
         assert result["toxicity_score"] == 1.0
 
     @patch("mebot.pipelines._llm_gateway")
@@ -245,19 +282,14 @@ class TestPipelineIntegration:
 
     @patch("mebot.pipelines._llm_gateway")
     def test_pipeline_sanitizes_output(self, mock_gateway):
-        def complete_side(role, messages, **kwargs):
-            if kwargs.get("raw"):
-                return LLMResponse(
-                    content="Using Groq with gpt-oss-120b. UUID: 12345678-1234-1234-1234-123456789012",
-                    tool_calls=None,
-                    finish_reason="stop",
-                )
-            return json.dumps({"classification": "GOOD", "quality_score": 0.8, "issues": [], "suggestion": ""})
-
         mock_gateway.complete = MagicMock(side_effect=[
-            json.dumps({"classification": "ACCEPTABLE", "toxicity_score": 0.1, "reason": "clean"}),
+            json.dumps({
+                "topic": "ACCEPTABLE", "topic_confidence": 0.9,
+                "toxicity": "ACCEPTABLE", "toxicity_score": 0.1,
+                "reason": "clean", "suggested_redirect": "",
+            }),
             LLMResponse(
-                content="Using Groq with gpt-oss-120b. UUID: 12345678-1234-1234-1234-123456789012",
+                content="UUID: 12345678-1234-1234-1234-123456789012",
                 tool_calls=None,
                 finish_reason="stop",
             ),
@@ -267,6 +299,17 @@ class TestPipelineIntegration:
         result = orchestrator.chat("What do you use?", [])
         assert "12345678-1234-1234-1234-123456789012" not in result
 
+    @patch("mebot.pipelines._llm_gateway")
+    def test_orchestrator_blocks_off_topic(self, mock_gateway):
+        mock_gateway.complete = MagicMock(return_value=json.dumps({
+            "topic": "OFF_TOPIC", "topic_confidence": 0.9,
+            "toxicity": "ACCEPTABLE", "toxicity_score": 0.1,
+            "reason": "matemáticas", "suggested_redirect": "Solo respondo sobre Ángel.",
+        }))
+        orchestrator = PipelineOrchestrator()
+        result = orchestrator.chat("¿Cuánto es 2+2?", [])
+        assert "Ángel" in result or "Solo" in result
+
 
 # =============================================================================
 # SECURITY TESTS
@@ -275,7 +318,7 @@ class TestPipelineIntegration:
 
 class TestSecurity:
     def test_sanitizer_removes_infrastructure_keywords(self, sanitizer):
-        for kw in ["Groq", "Ollama", "gpt-oss-20b", "nemotron"]:
+        for kw in ["Ollama", "gpt-oss-20b", "nemotron"]:
             result = sanitizer.sanitize(f"Using {kw}")
             assert "[SISTEMA]" in result or kw not in result
 

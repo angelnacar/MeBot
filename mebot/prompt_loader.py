@@ -39,9 +39,8 @@ class PromptLoader:
 # Rutas de prompts
 _PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 _PATH_MEBEST = _PROMPTS_DIR / "meBest.md"
-_PATH_TOXICITY = _PROMPTS_DIR / "user_toxicity.md"
+_PATH_INPUT_GUARD = _PROMPTS_DIR / "input_guard.md"
 _PATH_QUALITY = _PROMPTS_DIR / "agent_quality.md"
-_PATH_TOPIC_GUARDRAIL = _PROMPTS_DIR / "topic_guardrail.md"
 _PATH_QUALITY_FACTS = _PROMPTS_DIR / "quality_facts.md"
 
 
@@ -53,9 +52,9 @@ def system_prompt() -> str:
     return PromptLoader.render(_PATH_MEBEST)
 
 
-def toxicity_prompt(message: str, history: list[dict[str, str]]) -> str:
-    """Returns the toxicity evaluation prompt."""
-    return PromptLoader.render(_PATH_TOXICITY, message=message, history=history)
+def input_guard_prompt(message: str, history: list[dict[str, str]]) -> str:
+    """Returns the combined topic + toxicity evaluation prompt."""
+    return PromptLoader.render(_PATH_INPUT_GUARD, message=message, history=history)
 
 
 def quality_facts_context() -> str:
@@ -72,8 +71,3 @@ def quality_prompt(message: str, history: list[dict[str, str]], reply: str) -> s
         message=message,
         reply=reply,
     )
-
-
-def topic_guardrail_prompt(message: str, history: list[dict[str, str]]) -> str:
-    """Returns the topic guardrail evaluation prompt."""
-    return PromptLoader.render(_PATH_TOPIC_GUARDRAIL, message=message, history=history)
