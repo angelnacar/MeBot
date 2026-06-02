@@ -21,11 +21,8 @@ git clone https://huggingface.co/spaces/angelnacar/Mebot
 uv sync
 
 # Configurar variables de entorno
-export GROQ_API_KEY=tu_groq_key
 export OLLAMA_BASE_URL=http://localhost:11434
 export OLLAMA_API_KEY=tu_ollama_key
-export PUSHOVER_USER=tu_pushover_user
-export PUSHOVER_TOKEN=tu_pushover_token
 
 # Ejecutar localmente
 uv run python main.py
@@ -36,32 +33,33 @@ Accede a la aplicación en `http://localhost:7860`.
 ## Arquitectura
 
 ```
-Usuario ──▶ TopicGuardrail ──▶ Toxicidad ──▶ Agente ──▶ Calidad ──▶ Sanitización ──▶ Respuesta
-                    │            (Groq)       (Groq)    (Groq)         │
-                    │               │                       │         │
-                    ▼               ▼                       ▼         │
-            Bloqueo off-topic   Bloqueo si           Rerun con       │
-            (score > 0.7)       feedback            ▼
-                                                   (Ollama)    Salida Final
+Usuario ──▶ InputGuard ──▶ Agente ──▶ Calidad ──▶ Sanitización ──▶ Respuesta
+              (Ollama)     (Ollama)   (Ollama)         │
+                 │                       │             │
+                 ▼                       ▼             ▼
+        Bloqueo off-topic         Rerun con       Output final
+        o toxicidad              feedback
+        (en una llamada)         (Ollama)
 ```
 
 ### Componentes del Pipeline
 
 | Componente | Propósito |
 |-----------|---------|
-| `TopicGuardrail` | Bloquea preguntas fuera de tema |
-| `ToxicityPipeline` | Filtra entrada tóxica (umbral: 0.7) |
-| `AgentPipeline` | Agente principal con llamada a herramientas |
+| `InputGuardPipeline` | Evalúa tópico y toxicidad en una sola llamada LLM (umbral toxicidad: 0.7) |
+| `AgentPipeline` | Agente principal con tool calling |
 | `QualityEvaluator` | Valida calidad de respuesta (umbral: 0.6) |
-| `RerunPipeline` | Regenera respuestas de baja calidad |
+| `RerunPipeline` | Regenera respuestas de baja calidad con feedback |
 | `OutputSanitizer` | Elimina UUIDs, nombres de herramientas, referencias a proveedores |
 
-### Proveedores LLM
+### Modelos LLM
 
-| Proveedor | Modelo | Caso de Uso |
-|----------|-------|----------|
-| Groq | `llama-3.1-8b-instant` | Toxicidad, Calidad, Agente |
-| Ollama | `gpt-oss:120b-cloud` | Fallback y Rerun |
+| Rol | Modelo | Proveedor |
+|-----|--------|-----------|
+| `AGENT` | `deepseek-v4-pro:cloud` | Ollama |
+| `INPUT_GUARD` | `minimax-m3:cloud` | Ollama |
+| `EVALUATOR` | `minimax-m3:cloud` | Ollama |
+| `RERUN` | `minimax-m3:cloud` | Ollama |
 
 ## Estructura del Proyecto
 
@@ -74,7 +72,6 @@ mebot/
 ├── llm_gateway.py    # Clientes LLM con rate limiting
 ├── tools.py          # Registro de herramientas del agente
 ├── sanitizer.py      # Filtrado de salida
-├── pushover.py       # Servicio de notificaciones
 ├── pipelines.py      # Orquestador del pipeline
 └── main.py           # Punto de entrada Gradio
 
@@ -85,12 +82,11 @@ tests/                # Tests unitarios y de integración
 
 ## Características Principales
 
-- **Validación multi-etapa**: Filtrado por tema, detección de toxicidad, puntuación de calidad
-- **Prevención de alucinaciones**: Verificación factual contra datos estructurados del perfil — cualquier invención detectada bloquea la respuesta (score ≤ 0.3)
-- **Fallback automático**: Cambia a Ollama si Groq alcanza el límite de tasa
+- **Validación multi-etapa**: Filtrado por tema y toxicidad en una llamada, puntuación de calidad con rerun automático
+- **Prevención de alucinaciones**: Verificación factual contra datos estructurados del perfil
 - **Seguridad por diseño**: OutputSanitizer previene fugas de detalles internos
-- **Captura de contacto**: Registra email del usuario vía Pushover cuando lo proporciona
-- **Registro de preguntas desconocidas**: Trackea preguntas para mejora futura
+- **Captura de contacto**: Registra email del usuario en logs cuando lo proporciona voluntariamente
+- **Registro de preguntas desconocidas**: Trackea preguntas sin respuesta para mejora futura
 
 ## Desarrollo
 
